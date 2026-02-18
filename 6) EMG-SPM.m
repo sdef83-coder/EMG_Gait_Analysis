@@ -1,232 +1,167 @@
-%% COMPARAISON SPM EMG ENFANTS VS JEUNES ENFANTS VS ADULTES
+%% ANALYSE SPM (STATISTICAL PARAMETRIC MAPPING) - INTER-GROUPES & INTRA-SURFACES
+%
+% OBJECTIF :
+% Ce script réalise deux types d'analyses statistiques sur le cycle de marche :
+%   1) INTER-GROUPES : Compare les populations (ex: Adultes vs Adolescents) 
+%      sur une même surface (ex: Plat).
+%   2) INTRA-GROUPE  : Compare l'effet de la surface (ex: Plat vs High) 
+%      au sein d'un même groupe de sujets (test apparié).
+%
+% ENTRÉES :
+%   - Fichiers consolidés : SPM-EMG-ADULTES.mat, SPM-EMG-ADOLESCENTS.mat, etc.
+%   - Librairie SPM1D (SnPM pour les tests non-paramétriques).
+%
+% SORTIES (RÉSULTATS DU SCRIPT) :
+%   - IMAGES (.png) : Enregistrées dans /Results/Fig/SPM_EMG/.
+%       * Format "SPM_INTER_..." : Différences entre groupes (ex: Adultes vs Ados).
+%       * Format "SPM_INTRA_..." : Différences entre surfaces (ex: Plat vs High).
+%   - GRAPHIQUES : Doubles tracés (Moyenne+SD en haut / Statistique T en bas).
+%   - ZONES SIGNIFICATIVES : Mise en évidence par zones grisées et p-values 
+%     affichées directement sur les graphiques pour les zones > seuil critique.
+%   - LOG CONSOLE : Suivi en direct des comparaisons significatives trouvées.
+%
+% -------------------------------------------------------------------------
 
 clc; clear; close all;
 
-% Chemins
-cd('C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Matrix');
-addpath(genpath('C:\Users\silve\Desktop\DOCTORAT\PROGRAMMATION\spm1dmatlab-master'));
+%% ===================== CONFIGURATION DES CHEMINS ========================
 
-% Chargement des données
-GroupData.Enfants = load('SPM-EMG-Enfant.mat');
-GroupData.Adultes = load('SPM-EMG-ADULTES.mat');
-GroupData.JeunesEnfants = load('SPM-EMG-JeunesEnfants.mat');
+DATA_DIR = 'C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Matrix';
+SPM_PATH = 'C:\Users\silve\Desktop\DOCTORAT\PROGRAMMATION\spm1dmatlab-master';
+SAVE_DIR = 'C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Fig\SPM_EMG';
 
-% Comparaisons à effectuer
-Comparisons = {
+addpath(genpath(SPM_PATH));
+if ~exist(SAVE_DIR, 'dir'), mkdir(SAVE_DIR); end
+cd(DATA_DIR);
+
+%% ===================== CHARGEMENT DES DONNÉES ===========================
+
+% On charge les 4 groupes. Assurez-vous que les fichiers existent.
+GroupData.Adultes       = load('SPM-EMG-ADULTES.mat');
+GroupData.Adolescents   = load('SPM-EMG-ADOLESCENTS.mat');
+GroupData.Enfants       = load('SPM-EMG-ENFANT.mat');
+GroupData.JeunesEnfants = load('SPM-EMG-JEUNESENFANTS.mat');
+
+% Paramètres fixes
+GroupNames = fieldnames(GroupData);
+Surfaces   = {'Plat', 'Medium', 'High'};
+Muscles    = {'EMG_TAprox', 'EMG_TAdist', 'EMG_SOL', 'EMG_GM', 'EMG_VL', 'EMG_RF', 'EMG_ST', 'EMG_GMED'};
+alpha      = 0.05;
+nPerm      = 5000; % Nombre de permutations pour la robustesse (SnPM)
+
+%% ===================== 1. ANALYSE INTRA-GROUPE (EFFET SURFACE) ==========
+% On regarde si, pour les Adolescents (par ex.), marcher sur 'High' change
+% l'activation par rapport au 'Plat'.
+
+fprintf('--- DÉBUT : ANALYSE INTRA-GROUPE (PLAT vs SURFACES) ---\n');
+
+% On définit les paires de surfaces à comparer
+SurfComps = {'Plat', 'Medium'; 'Plat', 'High'; 'Medium', 'High'};
+
+for iG = 1:length(GroupNames)
+    gn = GroupNames{iG}; % Nom du groupe actuel
+    
+    for iS = 1:size(SurfComps, 1)
+        s1 = SurfComps{iS, 1};
+        s2 = SurfComps{iS, 2};
+        
+        for iM = 1:length(Muscles)
+            mus = Muscles{iM};
+            
+            % Extraction (Jambe gauche par défaut)
+            Y1 = GroupData.(gn).mean_cycles_combined.(s1).left.(mus);
+            Y2 = GroupData.(gn).mean_cycles_combined.(s2).left.(mus);
+            
+            % Test t Apparié (Paired) : mêmes sujets, deux conditions
+            % On ne garde que les sujets ayant des données valides pour les deux surfaces
+            valid = ~any(isnan(Y1),2) & ~any(isnan(Y2),2);
+            Y1 = Y1(valid,:); Y2 = Y2(valid,:);
+            
+            if size(Y1,1) < 3, continue; end % Sécurité nb de sujets
+            
+            % Calcul SPM (Non-paramétrique)
+            spm = spm1d.stats.nonparam.ttest_paired(Y1, Y2);
+            spmi = spm.inference(alpha, 'two_tailed', true, 'iterations', nPerm);
+            
+            % Sauvegarde si significatif (p < 0.05)
+            if spmi.h0reject
+                plot_spm_result(spmi, Y1, Y2, gn, s1, s2, mus, SAVE_DIR, 'INTRA');
+            end
+        end
+    end
+end
+
+%% ===================== 2. ANALYSE INTER-GROUPES (EFFET ÂGE) =============
+% On regarde si, sur une surface donnée (ex: Medium), les Adolescents 
+% sont différents des Adultes.
+
+fprintf('\n--- DÉBUT : ANALYSE INTER-GROUPES (COMPARAISON ÂGES) ---\n');
+
+% Paires de groupes à comparer
+GroupComps = {
+    'Adultes', 'Adolescents';
     'Adultes', 'Enfants';
-    'Adultes', 'JeunesEnfants';
-    'JeunesEnfants', 'Enfants'
+    'Adolescents', 'Enfants';
+    'Enfants', 'JeunesEnfants'
 };
 
-% Paramètres
-saveFolder = 'C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Fig\SPM_EMG';
-if ~exist(saveFolder, 'dir'); mkdir(saveFolder); end
-
-x = 1:100;
-muscles = {'EMG_TAprox', 'EMG_TAdist', 'EMG_SOL', 'EMG_GM', 'EMG_VL', 'EMG_RF', 'EMG_ST', 'EMG_GMED'};
-conditions = {'Plat', 'Medium', 'High'};
-alpha = 0.05;
-affiche_avec_std = @(mean_data, std_data, color) fill([x fliplr(x)], [mean_data + std_data, fliplr(mean_data - std_data)], color, 'FaceAlpha', 0.3, 'EdgeColor', 'none');
-
-% Boucle sur chaque comparaison
-for comp = 1:size(Comparisons, 1)
-    group1 = Comparisons{comp, 1};
-    group2 = Comparisons{comp, 2};
-
-    for m = 1:length(muscles)
-        muscle = muscles{m};
-        fig = figure('Position',[100 100 1400 800]);
-        sgtitle(['Comparaison ' group1 ' vs ' group2 ' - EMG (SnPM) - Muscle : ' muscle]);
-
-        for c = 1:length(conditions)
-            cond = conditions{c};
-
-            try
-                Y1 = GroupData.(group1).mean_cycles_combined.(cond).(muscle);
-                Y2 = GroupData.(group2).mean_cycles_combined.(cond).(muscle);
-            catch
-                warning(['❌ Données manquantes pour ' muscle ' - ' cond]);
-                continue
-            end
-
-            if size(Y1,2) ~= 100 || size(Y2,2) ~= 100
-                warning(['❌ Format incorrect pour ' muscle ' - ' cond]);
-                continue
-            end
-
-            % Moyenne et écart-type
-            mean1 = mean(Y1, 1);
-            std1 = std(Y1, 0, 1);
-            mean2 = mean(Y2, 1);
-            std2 = std(Y2, 0, 1);
-
-            % Tracé EMG
-            subplot(length(conditions), 2, (c-1)*2+1);
-            hold on;
-            affiche_avec_std(mean1, std1, 'b');
-            affiche_avec_std(mean2, std2, 'r');
-            plot(x, mean1, 'b', 'LineWidth', 1.5);
-            plot(x, mean2, 'r', 'LineWidth', 1.5);
-            title(['EMG - ' cond]);
-            legend(group1, group2);
-            xlabel('% cycle de marche');
-            ylabel('Activité EMG (norm.)');
-            grid on;
-
-            % Analyse SnPM
-            subplot(length(conditions), 2, (c-1)*2+2);
-            hold on;
-            disp(['SnPM pour ' muscle ' - ' cond ' : ' group1 ' vs ' group2]);
+for iS = 1:length(Surfaces)
+    surf = Surfaces{iS};
+    
+    for iC = 1:size(GroupComps, 1)
+        g1 = GroupComps{iC, 1};
+        g2 = GroupComps{iC, 2};
+        
+        for iM = 1:length(Muscles)
+            mus = Muscles{iM};
+            
+            % Test t indépendant : deux groupes différents de sujets
+            Y1 = GroupData.(g1).mean_cycles_combined.(surf).left.(mus);
+            Y2 = GroupData.(g2).mean_cycles_combined.(surf).left.(mus);
+            
+            % Nettoyage des sujets exclus (NaN)
+            Y1(any(isnan(Y1),2),:) = [];
+            Y2(any(isnan(Y2),2),:) = [];
+            
+            if size(Y1,1) < 2 || size(Y2,1) < 2, continue; end
+            
+            % Calcul SPM (Non-paramétrique)
             spm = spm1d.stats.nonparam.ttest2(Y1, Y2);
-            nPermMax = spm.permuter.nPermTotal;  % nombre max possible de permutations
-            iterations = min(5000, nPermMax);   % 5000 si possible, sinon le max
-            spmi = spm.inference(alpha, 'two_tailed', true, 'interp', true, 'iterations', iterations);
-            spmi.plot();
-            spmi.plot_threshold_label();
-            spmi.plot_p_values();
-            title(['SnPM1D - ' cond]);
-            ylabel('T-statistique');
-            xlabel('% cycle de marche');
-            grid on;
-
-            % Clusters significatifs
-            if spmi.h0reject && isstruct(spmi.clusters)
-                for i = 1:length(spmi.clusters)
-                    if spmi.clusters(i).h0reject
-                        cluster = spmi.clusters(i).indices;
-                        fill([x(cluster) fliplr(x(cluster))], ...
-                             [max(ylim)*ones(size(cluster)) fliplr(min(ylim)*ones(size(cluster)))], ...
-                             'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
-                        text(mean(x(cluster)), max(ylim)*0.9, '*', ...
-                             'FontSize', 16, 'Color', 'k', 'FontWeight', 'bold', ...
-                             'HorizontalAlignment', 'center');
-                    end
-                end
-            else
-                disp(['→ Aucune différence significative pour ' muscle ' - ' cond]);
+            spmi = spm.inference(alpha, 'two_tailed', true, 'iterations', nPerm);
+            
+            % Sauvegarde si significatif
+            if spmi.h0reject
+                plot_spm_result(spmi, Y1, Y2, surf, g1, g2, mus, SAVE_DIR, 'INTER');
             end
         end
-
-        % Sauvegarde figure
-        saveName = fullfile(saveFolder, ['SnPM_EMG_' muscle '_' group1 '_vs_' group2]);
-        exportgraphics(fig, [saveName '.png'], 'Resolution', 300);
-        close(fig);
     end
 end
 
-%% COMPARAISON INTRAGROUPE - Plat vs High - EMG SnPM
-clc; clear; close all;
+fprintf('\n=== ANALYSE SPM TERMINÉE ===\n');
 
-% Chemins
-cd('C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Matrix');
-addpath(genpath('C:\Users\silve\Desktop\DOCTORAT\PROGRAMMATION\spm1dmatlab-master'));
+%% ===================== FONCTION DE VISUALISATION ========================
 
-Enfants = load('SPM-EMG-Enfant.mat');
-Adultes = load('SPM-EMG-Adultes.mat');
-Jeunes_Enfants = load('SPM-EMG-JeunesEnfants.mat');
-
-saveFolder = 'C:\Users\silve\Desktop\DOCTORAT\UNIV MONTREAL\TRAVAUX-THESE\Surfaces Irrégulières\Datas\Script\ActivationMusculaire\Results\Fig\SPM_EMG_CONDITIONS';
-if ~exist(saveFolder, 'dir')
-    mkdir(saveFolder)
-end
-
-x = 1:100;
-muscles = {'EMG_TAprox', 'EMG_TAdist', 'EMG_SOL', 'EMG_GM', 'EMG_VL', 'EMG_RF', 'EMG_ST', 'EMG_GMED'};
-alpha = 0.05;
-groupes = {'Adultes', 'Enfants', 'Jeunes_Enfants'};
-
-% Fonction affichage bande ±1 SD
-affiche_avec_std = @(mean_data, std_data, color) fill([x fliplr(x)], ...
-    [mean_data + std_data, fliplr(mean_data - std_data)], ...
-    color, 'FaceAlpha', 0.3, 'EdgeColor', 'none');
-
-for g = 1:length(groupes)
-    nomGroupe = groupes{g};
-    switch nomGroupe
-    case 'Adultes'
-        DATA = Adultes;
-    case 'Enfants'
-        DATA = Enfants;
-    case 'Jeunes_Enfants'
-        DATA = Jeunes_Enfants;
-    otherwise
-        error(['Groupe inconnu : ' nomGroupe]);
-end
-
-    for m = 1:length(muscles)
-        muscle = muscles{m};
-
-        fig = figure('Position',[100 100 1400 600]);
-        sgtitle([nomGroupe ' - Comparaison EMG Plat vs High - Muscle : ' muscle]);
-
-        % Extraction
-        try
-            Y1 = DATA.mean_cycles_combined.Plat.(muscle);   % Plat
-            Y2 = DATA.mean_cycles_combined.High.(muscle);   % High
-        catch
-            warning(['❌ Données manquantes pour ' nomGroupe ' - ' muscle]);
-            close(fig);
-            continue;
-        end
-
-        if size(Y1,2) ~= 100 || size(Y2,2) ~= 100
-            warning(['❌ Format incorrect pour ' nomGroupe ' - ' muscle]);
-            close(fig);
-            continue;
-        end
-
-        % EMG signal (± SD)
-        subplot(1,2,1);
-        hold on
-        mean1 = mean(Y1, 1); std1 = std(Y1, 0, 1);
-        mean2 = mean(Y2, 1); std2 = std(Y2, 0, 1);
-
-        affiche_avec_std(mean1, std1, 'b');
-        affiche_avec_std(mean2, std2, 'r');
-        plot(x, mean1, 'b', 'LineWidth', 1.5);
-        plot(x, mean2, 'r', 'LineWidth', 1.5);
-        title(['EMG - Plat vs High']);
-        legend('Plat', 'High');
-        xlabel('% cycle de marche');
-        ylabel('Activité EMG (norm.)');
-        grid on;
-
-        % SnPM
-        subplot(1,2,2);
-        hold on
-        disp(['SnPM - ' nomGroupe ' - ' muscle ' : Plat vs High']);
-        spm = spm1d.stats.nonparam.ttest2(Y1, Y2);
-        nPermMax = spm.permuter.nPermTotal;  % nombre max possible de permutations
-        iterations = min(5000, nPermMax);   % 5000 si possible, sinon le max
-        spmi = spm.inference(alpha, 'two_tailed', true, 'interp', true, 'iterations', iterations);
-        spmi.plot();
-        spmi.plot_threshold_label();
-        spmi.plot_p_values();
-        title('SnPM1D - Plat vs High');
-        ylabel('T-statistique');
-        xlabel('% cycle de marche');
-        grid on;
-
-        % Clusters
-        if spmi.h0reject && isstruct(spmi.clusters)
-            for i = 1:length(spmi.clusters)
-                if spmi.clusters(i).h0reject
-                    cluster = spmi.clusters(i).indices;
-                    fill([x(cluster) fliplr(x(cluster))], ...
-                        [max(ylim)*ones(size(cluster)) fliplr(min(ylim)*ones(size(cluster)))], ...
-                        'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
-                    text(mean(x(cluster)), max(ylim)*0.9, '*', ...
-                         'FontSize', 16, 'Color', 'k', 'FontWeight', 'bold', ...
-                         'HorizontalAlignment', 'center');
-                end
-            end
-        else
-            disp(['→ Aucune différence significative pour ' nomGroupe ' - ' muscle]);
-        end
-
-        % Sauvegarde
-        saveName = fullfile(saveFolder, ['SnPM_' nomGroupe '_Plat_vs_High_' muscle]);
-        exportgraphics(fig, [saveName '.png'], 'Resolution', 300);
-        close(fig);
-    end
+function plot_spm_result(spmi, Y1, Y2, context, name1, name2, mus, save_dir, type)
+    % Prépare une figure invisible pour gagner du temps
+    fig = figure('Visible', 'off', 'Units', 'normalized', 'Position', [0.1 0.1 0.8 0.8]);
+    
+    % En haut : Courbes moyennes +/- SD
+    subplot(2,1,1);
+    spm1d.plot.plot_meanSD(Y1, 'color', 'b', 'label', name1); hold on;
+    spm1d.plot.plot_meanSD(Y2, 'color', 'r', 'label', name2);
+    title(sprintf('[%s] %s | %s : %s vs %s', type, context, strrep(mus,'_',' '), name1, name2));
+    ylabel('Amplitude EMG Norm.');
+    legend('Location','best');
+    
+    % En bas : Statistique T et seuil de p-value
+    subplot(2,1,2);
+    spmi.plot();
+    spmi.plot_threshold_label();
+    spmi.plot_p_values();
+    xlabel('% du cycle de marche');
+    
+    % Sauvegarde PNG
+    fname = sprintf('SPM_%s_%s_%s_%s_vs_%s.png', type, context, mus, name1, name2);
+    saveas(fig, fullfile(save_dir, fname));
+    close(fig);
 end
