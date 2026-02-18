@@ -264,8 +264,7 @@ for j = 1:length(jambes)
             if ~isfield(CYCLES_OUTLIERS.(pid).(cond_ref), jambes{j}); CYCLES_OUTLIERS.(pid).(cond_ref).(jambes{j})=struct(); end
             CYCLES_OUTLIERS.(pid).(cond_ref).(jambes{j}).(muscle) = outlier_indices;
 
-            % -------------------------- STOCKAGE TOE-OFF (% CYCLE) --------------------------
-            % (en pratique : 1 seul stockage par condition/jambe suffit ; ici OK aussi)
+            % -------------------------- STOCKAGE TOE-OFF (% CYCLE) -------------------------
             if ~isempty(all_toeoff_percentages)
                 if ~isfield(CYCLES_TOEOFF, pid); CYCLES_TOEOFF.(pid)=struct(); end
                 if ~isfield(CYCLES_TOEOFF.(pid), cond_ref); CYCLES_TOEOFF.(pid).(cond_ref)=struct(); end

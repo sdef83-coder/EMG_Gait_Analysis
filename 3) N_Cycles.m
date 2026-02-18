@@ -84,14 +84,14 @@ for i = 1:numel(files)
 
             % Ajout des données au tableau final
             newRow = {string(participant), string(cond), string(leg), double(n_cycles)};
-            CycleTable = [CycleTable; newRow]; %#ok<AGROW>
+            CycleTable = [CycleTable; newRow]; 
         end
     end
 end
 
 % ===================== TRI ET AFFICHAGE =================================
 
-% Tri alphabétique pour une lecture plus aisée (Participant > Condition > Jambe)
+% Tri pour une lecture plus aisée (Participant > Condition > Jambe)
 CycleTable = sortrows(CycleTable, {'Participant', 'Condition', 'Jambe'});
 
 % Affichage du résultat final dans la fenêtre de commande

@@ -85,7 +85,7 @@ for iC = 1:length(Conditions)
                 current_matrix = SYNERGY_MATRIX.(pid).(condition).(leg);
                 
                 % Concaténation verticale (tous les participants les uns sous les autres)
-                condition_matrix = [condition_matrix; current_matrix]; %#ok<AGROW>
+                condition_matrix = [condition_matrix; current_matrix];
                 
                 % Stockage des métadonnées (nom des muscles) la première fois
                 if isempty(muscle_names) && isfield(SYNERGY_COLMAP.(pid).(condition), leg)

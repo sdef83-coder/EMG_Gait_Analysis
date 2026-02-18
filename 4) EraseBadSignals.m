@@ -53,8 +53,8 @@ end
 participants = {}; participant_columns = {};
 for col = 1:size(raw, 2)
     if ~isempty(raw{1,col}) && ischar(raw{1,col}) && startsWith(raw{1,col}, 'CTL_')
-        participants{end+1} = raw{1,col}; %#ok<AGROW>
-        participant_columns{end+1} = col; %#ok<AGROW>
+        participants{end+1} = raw{1,col}; 
+        participant_columns{end+1} = col; 
     end
 end
 
@@ -103,14 +103,14 @@ for p_idx = 1:length(participants)
                     emg_f = ['EMG_' muscle];
                     if isfield(CYCLES_MOYENS.(participant).(cond_name), side)
                         CYCLES_MOYENS.(participant).(cond_name).(side).(emg_f)(:) = NaN;
-                        removal_log_cycles{end+1} = sprintf('%s-%s-%s', cond_name, side, muscle); %#ok<AGROW>
+                        removal_log_cycles{end+1} = sprintf('%s-%s-%s', cond_name, side, muscle); 
                     end
 
                     % 2. Mise à NaN dans la matrice de synergie (pour la NNMF)
                     if isfield(muscle2col, muscle)
                         col_idx = muscle2col.(muscle);
                         SYNERGY_MATRIX.(participant).(cond_name).(side)(:, col_idx) = NaN;
-                        removal_log_synergy{end+1} = sprintf('%s-%s-col%d', cond_name, side, col_idx); %#ok<AGROW>
+                        removal_log_synergy{end+1} = sprintf('%s-%s-col%d', cond_name, side, col_idx); 
                     end
                     fprintf('  ✗ Filtré : %s | %s | %s\n', participant, cond_name, muscle);
                 end
@@ -142,7 +142,7 @@ function [order, muscle2col] = derive_order_from_cycles_and_synergy(CYCLES_MOYEN
         S = CYCLES_MOYENS.(pid).(cond).(side);
         f = fieldnames(S);
         for i = 1:numel(f)
-            if strncmp(f{i},'EMG_',4), order{end+1} = erase(f{i},'EMG_'); end %#ok<AGROW>
+            if strncmp(f{i},'EMG_',4), order{end+1} = erase(f{i},'EMG_'); end
         end
     end
     % Création du dictionnaire index-colonne
