@@ -1,44 +1,87 @@
-%% ========================================================================
-%  COHERENCE AREA - SOLUTION 2: SÉPARATION COMPLÈTE DES REMPLISSAGES
-% ========================================================================
+%% AGRÉGATION DES AIRES DE COHÉRENCE PAR GROUPE D'ÂGE — TABLES ET FIGURES
+%
+% OBJECTIF :
+%   Ce script centralise les aires significatives de cohérence EMG-EMG
+%   (CoherenceArea_*, calculées par le script 9) pour tous les participants
+%   d'un projet, les organise en tables par groupe d'âge, et génère des
+%   figures de barres groupées avec points individuels.
+%
+%   Le traitement est divisé en deux grandes parties indépendantes :
+%     Partie 1 — Agrégation des données :
+%       Parcourt tous les fichiers Coherence_<PID>.mat, extrait les aires
+%       par condition/sous-phase/bande/paire/côté, les stocke dans ComboStore,
+%       compte le nombre de cycles (N_cycle) et de participants (N_Participant)
+%       par groupe/paire/condition, et exporte des CSVs + un .mat de synthèse.
+%     Partie 2 — Visualisation :
+%       Charge TABLES_AREA (produit en Partie 1) et génère une figure par
+%       combinaison sous-phase × bande fréquentielle, avec barres groupées
+%       par condition, écart-types, et points individuels par côté.
+%
+% ENTRÉES :
+%   - Coherence_<PID>.mat : Fichiers de résultats issus des scripts 7 + 9,
+%                           contenant la structure DATA avec les champs
+%                           CoherenceArea_* et leurs métadonnées.
+%   - ParticipantGroup.m  : Script définissant la structure Group avec les
+%                           listes de participants par groupe d'âge :
+%                             Group.JeunesEnfants, Group.Enfants,
+%                             Group.Adolescents, Group.Adultes
+%
+% SORTIES :
+%   Partie 1 :
+%   - TABLE_AREA_<sp>_<band>_<pair>_<side>.csv : Un CSV par combinaison
+%     sous-phase × bande × paire × côté, avec colonnes :
+%     GroupeAge | Participant | Plat | Medium | High
+%   - ALL_TABLES_AREA_STRUCT.mat : Structure TABLES_AREA complète incluant :
+%       * TABLES_AREA.(pair).(band).(sp).(side) : tables MATLAB
+%       * TABLES_AREA.N_cycle.(pair).(group).(cond) : total de cycles
+%       * TABLES_AREA.N_Participant.(group).(pair).(cond) : nb de participants
+%   Partie 2 :
+%   - GroupedBars_AREA_<sp>_<band>_<groupe>.png : Une figure par combinaison
+%     sous-phase × bande pour le groupe d'âge sélectionné.
+%
+% DÉPENDANCES :
+%   - ParticipantGroup.m   : Définit la variable struct Group
+%   - Fonctions locales    : resolveAge, get_quota_if_condition_has_cycles,
+%                            local_side_has_cycles (en bas de ce script)
+% -------------------------------------------------------------------------
 
-%=========================== 1) ORGANIZATION =============================
+%% ===================== PARTIE 1 : AGRÉGATION DES DONNÉES ================
 clc; clear; close all;
 
-% --- Folders (EDIT IF NEEDED) -------------------------------------------
+%% --- Chemins ---
 root_coh = 'C:\Users\defsil00\Documents\Script\Results\Coherence';
-all_dir  = fullfile(root_coh, 'ALL');                 % contains Coherence_*.mat
-stat_dir = fullfile(root_coh, 'STATISTIQUE_AREA');    % new output root for AREA
+all_dir  = fullfile(root_coh, 'ALL');              % Fichiers Coherence_*.mat
+stat_dir = fullfile(root_coh, 'STATISTIQUE_AREA'); % Dossier de sortie
 csv_dir  = fullfile(stat_dir, 'CSV_CoherenceArea');
 addpath(genpath('C:\Users\defsil00\Documents\Script'));
 
 if ~exist(stat_dir,'dir'), mkdir(stat_dir); end
-if ~exist(csv_dir,'dir'), mkdir(csv_dir); end
+if ~exist(csv_dir,'dir'),  mkdir(csv_dir);  end
 
-% --- Add utils path (EDIT IF NEEDED) ------------------------------------
-addpath(genpath('C:\Users\defsil00\Documents\Script'));
-
-% --- Load age groups definition -----------------------------------------
-% Must define struct "Group" with fields: JeunesEnfants, Enfants, Adolescents (optional), Adultes
+% Chargement des listes de participants par groupe d'âge
+% → Crée la variable struct Group (JeunesEnfants, Enfants, Adolescents, Adultes)
 ParticipantGroup;
 
-% --- Parameters ----------------------------------------------------------
+% --- Paramètres ---
 Conditions = {'Plat','Medium','High'};
 Sides      = {'left','right','mean'};
 Bandes     = {'Alpha','Beta','Gamma'};
 
-% Muscle pairs (names must match your DATA field suffixes)
+% Paires de muscles à analyser (noms correspondant aux suffixes de champs DATA)
 muscle_pairs = { ...
     'TAprox','TAdist'; ...
-    'VL','RF'; ...
-    'GM','SOL'; ...
-    'GMED','RF'; ...
-    'GMED','VL'; ...
-    'RF','ST' ...
+    'VL','RF';         ...
+    'GM','SOL';        ...
+    'GMED','RF';       ...
+    'GMED','VL';       ...
+    'RF','ST'          ...
 };
-pair_names = cellfun(@(a,b)[a '_' b], muscle_pairs(:,1), muscle_pairs(:,2), 'UniformOutput', false);
+% Construction des clés de paires sous la forme 'muscle1_muscle2'
+pair_names = cellfun(@(a,b)[a '_' b], muscle_pairs(:,1), muscle_pairs(:,2), ...
+                     'UniformOutput', false);
 
-% Which subphases to include per pair (mirrors your plotting logic)
+% Sous-phases d'intérêt par paire (détermine quels champs CoherenceArea sont extraits)
+% Si une paire est absente, 'Full' est utilisé par défaut
 muscle_phases = struct();
 muscle_phases.TAprox_TAdist = {'LoadingResponse','Swing'};
 muscle_phases.VL_RF         = {'LoadingResponse'};
@@ -47,17 +90,21 @@ muscle_phases.GMED_RF       = {'LoadingResponse'};
 muscle_phases.GMED_VL       = {'LoadingResponse'};
 muscle_phases.RF_ST         = {'LoadingResponse'};
 
-% --- List participant files ---------------------------------------------
+% --- Détection des fichiers participants ---
 mat_files = dir(fullfile(all_dir, 'Coherence_*.mat'));
 if isempty(mat_files)
-    error('No "Coherence_*.mat" files found in %s', all_dir);
+    error('Aucun fichier "Coherence_*.mat" trouvé dans %s', all_dir);
 end
-nP = numel(mat_files);
+nP = numel(mat_files); % Nombre total de participants détectés
 
-% --- Nested container: ComboStore.(sp).(band).(pair).(side) -------------
-ComboStore = struct(); % will hold fields: Participant (nP x 1), GroupeAge (nP x 1), Plat/Medium/High (nP x 1)
+%% --- Pré-allocation de ComboStore ---
+% ComboStore est un conteneur imbriqué :
+%   ComboStore.(sp).(band).(pair).(side)
+% Chaque feuille contient des vecteurs de taille [nP × 1] :
+%   .Participant  (cell), .GroupeAge (cell), .Plat, .Medium, .High (double)
+% La pré-allocation évite la fragmentation mémoire lors de l'itération
+ComboStore = struct();
 
-% Pre-build all (sp, band, pair, side) slots with preallocation -----------
 for iPair = 1:numel(pair_names)
     pair = pair_names{iPair};
     if isfield(muscle_phases, pair)
@@ -71,52 +118,49 @@ for iPair = 1:numel(pair_names)
             sp = phases_for_pair{iSP};
             for iS = 1:numel(Sides)
                 side = Sides{iS};
-                if ~isfield(ComboStore, sp), ComboStore.(sp) = struct(); end
-                if ~isfield(ComboStore.(sp), band), ComboStore.(sp).(band) = struct(); end
-                if ~isfield(ComboStore.(sp).(band), pair), ComboStore.(sp).(band).(pair) = struct(); end
-                % Preallocate vectors
+                if ~isfield(ComboStore, sp),                 ComboStore.(sp) = struct();                   end
+                if ~isfield(ComboStore.(sp), band),          ComboStore.(sp).(band) = struct();             end
+                if ~isfield(ComboStore.(sp).(band), pair),   ComboStore.(sp).(band).(pair) = struct();      end
+                % Pré-allocation des vecteurs à NaN/cellule vide
                 ComboStore.(sp).(band).(pair).(side).Participant = cell(nP,1);
-                ComboStore.(sp).(band).(pair).(side).GroupeAge  = cell(nP,1);
-                ComboStore.(sp).(band).(pair).(side).Plat       = nan(nP,1);
-                ComboStore.(sp).(band).(pair).(side).Medium     = nan(nP,1);
-                ComboStore.(sp).(band).(pair).(side).High       = nan(nP,1);
+                ComboStore.(sp).(band).(pair).(side).GroupeAge   = cell(nP,1);
+                ComboStore.(sp).(band).(pair).(side).Plat        = nan(nP,1);
+                ComboStore.(sp).(band).(pair).(side).Medium      = nan(nP,1);
+                ComboStore.(sp).(band).(pair).(side).High        = nan(nP,1);
             end
         end
     end
 end
 
-% --- Totaux de cycles par paire/groupe/condition -------------------------
-group_list = fieldnames(Group); % ex: {'JeunesEnfants','Enfants','Adolescents','Adultes'}
-
-% N_cycle_total.(pair).(group).(cond) = somme des L_target_eff_<pair> lus dans META de chaque condition
+% --- Initialisations pour le comptage de cycles ---
+% N_cycle_total.(pair).(group).(cond) : somme des L_target_eff sur tous les
+% participants du groupe (utilisée pour le panneau d'info dans les figures)
+group_list    = fieldnames(Group);
 N_cycle_total = struct();
+counted       = struct(); % Registre anti-doublon par participant/paire/condition
 
-% Registre "déjà compté" (évite de recompter le même participant)
-% counted.(pair).(group).(cond).(pid) = true
-counted = struct();
-
+% ===================== ÉTAPE 1 : Récolte des données ====================
 fprintf('=== ÉTAPE 1: Harvesting AREA values + N_cycle ===\n');
 
-% ✅ BOUCLE PRINCIPALE: SEULEMENT RÉCUPÉRATION DES DONNÉES
 for ip = 1:nP
-    fn = mat_files(ip).name;            % Coherence_CTL_xx.mat
-    pid = regexprep(fn, '^Coherence_|\.mat$', '');
-    S = load(fullfile(all_dir, fn), 'DATA');
+    fn  = mat_files(ip).name;
+    pid = regexprep(fn, '^Coherence_|\.mat$', ''); % Extrait l'ID du participant
+    S   = load(fullfile(all_dir, fn), 'DATA');
     if ~isfield(S,'DATA'), continue; end
     DATA = S.DATA;
 
-    grp_age = resolveAge(pid, Group);
+    grp_age = resolveAge(pid, Group); % Détermine le groupe d'âge du participant
     fprintf('Participant %d/%d: %s (%s)\n', ip, nP, pid, grp_age);
 
-    % === 1) COMPTER LES CYCLES (INCHANGÉ) ===================================
+    % --- Sous-étape 1a : Comptage des cycles par paire/groupe/condition ---
     for iPair = 1:numel(pair_names)
         pair = pair_names{iPair};
 
-        % Init si besoin
-        if ~isfield(N_cycle_total, pair), N_cycle_total.(pair) = struct(); end
-        if ~isfield(N_cycle_total.(pair), grp_age), N_cycle_total.(pair).(grp_age) = struct(); end
-        if ~isfield(counted, pair), counted.(pair) = struct(); end
-        if ~isfield(counted.(pair), grp_age), counted.(pair).(grp_age) = struct(); end
+        % Initialisation des nœuds si nécessaires
+        if ~isfield(N_cycle_total, pair),                N_cycle_total.(pair) = struct();               end
+        if ~isfield(N_cycle_total.(pair), grp_age),      N_cycle_total.(pair).(grp_age) = struct();     end
+        if ~isfield(counted, pair),                      counted.(pair) = struct();                      end
+        if ~isfield(counted.(pair), grp_age),            counted.(pair).(grp_age) = struct();            end
 
         for ic = 1:numel(Conditions)
             cond = Conditions{ic};
@@ -131,18 +175,24 @@ for ip = 1:nP
                 counted.(pair).(grp_age).(cond).(pid) = false;
             end
 
+            % Chaque participant n'est compté qu'une fois par paire/cond
             if ~counted.(pair).(grp_age).(cond).(pid)
-                n_here = get_quota_if_condition_has_cycles(DATA, cond, pair);  % <-- NOUVEAU
+                % Lit L_target_eff uniquement si la condition a des cycles
+                n_here = get_quota_if_condition_has_cycles(DATA, cond, pair);
                 if ~isscalar(n_here) || ~isfinite(n_here), n_here = 0; end
-                N_cycle_total.(pair).(grp_age).(cond) = N_cycle_total.(pair).(grp_age).(cond) + double(n_here);
+                N_cycle_total.(pair).(grp_age).(cond) = ...
+                    N_cycle_total.(pair).(grp_age).(cond) + double(n_here);
                 counted.(pair).(grp_age).(cond).(pid) = true;
             end
         end
     end
 
-    % === 2) RÉCUPÉRER LES AIRES - SANS REMPLIR Participant/GroupeAge ======
+    % --- Sous-étape 1b : Extraction des valeurs d'aire de cohérence ---
+    % Seules les valeurs numériques sont stockées ici.
+    % Les métadonnées Participant/GroupeAge sont remplies séparément (Étape 2)
+    % pour éviter une écriture vectorielle incorrecte de cell arrays.
     for iPair = 1:numel(pair_names)
-        pair = pair_names{iPair};
+        pair  = pair_names{iPair};
         parts = strsplit(pair,'_'); m1 = parts{1}; m2 = parts{2};
         if isfield(muscle_phases, pair)
             phases_for_pair = muscle_phases.(pair);
@@ -159,14 +209,14 @@ for ip = 1:nP
                 for iSP = 1:numel(phases_for_pair)
                     sp = phases_for_pair{iSP};
 
-                    % construire area_field
+                    % Construction du nom du champ CoherenceArea selon la sous-phase
                     if strcmpi(sp,'Full')
                         area_field = sprintf('CoherenceArea_%s_%s_%s', band, m1, m2);
                     else
                         area_field = sprintf('CoherenceArea_%s_%s_%s_%s', sp, band, m1, m2);
                     end
 
-                    % Fetch left/right/mean
+                    % Lecture des valeurs gauche, droite et calcul de la moyenne
                     vL = NaN; vR = NaN;
                     if isfield(DATA.(cond),'left')  && isfield(DATA.(cond).left,  area_field)
                         vL = DATA.(cond).left.(area_field);
@@ -174,22 +224,22 @@ for ip = 1:nP
                     if isfield(DATA.(cond),'right') && isfield(DATA.(cond).right, area_field)
                         vR = DATA.(cond).right.(area_field);
                     end
-                    vM = mean([vL, vR], 'omitnan');
+                    vM = mean([vL, vR], 'omitnan'); % Moyenne bilatérale
 
-                    % Store SEULEMENT LES VALEURS NUMÉRIQUES
+                    % Stockage dans le vecteur pré-alloué à l'indice ip du participant
                     switch cond
                         case 'Plat'
-                            ComboStore.(sp).(band).(pair).left.Plat(ip)  = vL;
-                            ComboStore.(sp).(band).(pair).right.Plat(ip) = vR;
-                            ComboStore.(sp).(band).(pair).mean.Plat(ip)  = vM;
+                            ComboStore.(sp).(band).(pair).left.Plat(ip)   = vL;
+                            ComboStore.(sp).(band).(pair).right.Plat(ip)  = vR;
+                            ComboStore.(sp).(band).(pair).mean.Plat(ip)   = vM;
                         case 'Medium'
                             ComboStore.(sp).(band).(pair).left.Medium(ip)  = vL;
                             ComboStore.(sp).(band).(pair).right.Medium(ip) = vR;
                             ComboStore.(sp).(band).(pair).mean.Medium(ip)  = vM;
                         case 'High'
-                            ComboStore.(sp).(band).(pair).left.High(ip)  = vL;
-                            ComboStore.(sp).(band).(pair).right.High(ip) = vR;
-                            ComboStore.(sp).(band).(pair).mean.High(ip)  = vM;
+                            ComboStore.(sp).(band).(pair).left.High(ip)   = vL;
+                            ComboStore.(sp).(band).(pair).right.High(ip)  = vR;
+                            ComboStore.(sp).(band).(pair).mean.High(ip)   = vM;
                     end
                 end
             end
@@ -197,17 +247,18 @@ for ip = 1:nP
     end
 end
 
-% ✅ ÉTAPE 2: REMPLISSAGE SÉPARÉ DES MÉTADONNÉES Participant/GroupeAge
+% ===================== ÉTAPE 2 : Remplissage des métadonnées ============
+% Séparé de l'Étape 1 pour éviter que l'écriture dans des cell arrays
+% imbriqués n'écrase des entrées voisines (chaque indice ip est isolé)
 fprintf('=== ÉTAPE 2: Remplissage des métadonnées Participant/GroupeAge ===\n');
 
 for ip = 1:nP
-    fn = mat_files(ip).name;
-    pid = regexprep(fn, '^Coherence_|\.mat$', '');
+    fn      = mat_files(ip).name;
+    pid     = regexprep(fn, '^Coherence_|\.mat$', '');
     grp_age = resolveAge(pid, Group);
-    
     fprintf('Métadonnées participant %d/%d: %s (%s)\n', ip, nP, pid, grp_age);
-    
-    % Parcourir TOUTES les combinaisons et remplir SEULEMENT l'index ip
+
+    % Parcours exhaustif de ComboStore pour remplir uniquement l'index ip
     sp_fields = fieldnames(ComboStore);
     for isf = 1:numel(sp_fields)
         sp = sp_fields{isf};
@@ -220,7 +271,6 @@ for ip = 1:nP
                 sides_fields = fieldnames(ComboStore.(sp).(band).(pair));
                 for isd = 1:numel(sides_fields)
                     side = sides_fields{isd};
-                    % ✅ REMPLIR SEULEMENT L'INDEX ip, PAS TOUS LES INDICES
                     ComboStore.(sp).(band).(pair).(side).Participant{ip} = pid;
                     ComboStore.(sp).(band).(pair).(side).GroupeAge{ip}   = grp_age;
                 end
@@ -229,7 +279,9 @@ for ip = 1:nP
     end
 end
 
-%=================== 3) Build TABLES_AREA + CSVs (INCHANGÉ) ==============
+% ===================== ÉTAPE 3 : Construction des tables et CSV =========
+% Pour chaque combinaison (sp, band, pair, side), construit une table MATLAB
+% et exporte un CSV dans csv_dir
 TABLES_AREA = struct();
 fprintf('=== ÉTAPE 3: Writing CSVs and assembling TABLES_AREA ===\n');
 
@@ -244,14 +296,14 @@ for isf = 1:numel(sp_fields)
             pair = pair_fields{ipf};
             sides_fields = fieldnames(ComboStore.(sp).(band).(pair));
 
-            % Create branch in TABLES_AREA
-            if ~isfield(TABLES_AREA, pair), TABLES_AREA.(pair) = struct(); end
-            if ~isfield(TABLES_AREA.(pair), band), TABLES_AREA.(pair).(band) = struct(); end
-            if ~isfield(TABLES_AREA.(pair).(band), sp), TABLES_AREA.(pair).(band).(sp) = struct(); end
+            % Initialisation de la branche dans TABLES_AREA
+            if ~isfield(TABLES_AREA, pair),              TABLES_AREA.(pair) = struct();              end
+            if ~isfield(TABLES_AREA.(pair), band),       TABLES_AREA.(pair).(band) = struct();       end
+            if ~isfield(TABLES_AREA.(pair).(band), sp),  TABLES_AREA.(pair).(band).(sp) = struct();  end
 
-            % Emit a CSV per side
+            % Un CSV par côté (left, right, mean)
             for isd = 1:numel(sides_fields)
-                side = sides_fields{isd};
+                side  = sides_fields{isd};
                 store = ComboStore.(sp).(band).(pair).(side);
 
                 T = table( ...
@@ -268,38 +320,37 @@ for isf = 1:numel(sp_fields)
     end
 end
 
-% ✅ TEST DE VÉRIFICATION
+% --- Vérification rapide sur une combinaison connue ---
 fprintf('=== ÉTAPE 4: Vérification rapide ===\n');
 if isfield(TABLES_AREA, 'TAprox_TAdist') && ...
    isfield(TABLES_AREA.TAprox_TAdist, 'Alpha') && ...
    isfield(TABLES_AREA.TAprox_TAdist.Alpha, 'LoadingResponse') && ...
    isfield(TABLES_AREA.TAprox_TAdist.Alpha.LoadingResponse, 'mean')
-    
+
     T_test = TABLES_AREA.TAprox_TAdist.Alpha.LoadingResponse.mean;
     fprintf('Test sur TAprox_TAdist/Alpha/LoadingResponse/mean:\n');
     for i = 1:min(5, height(T_test))
-        pid = T_test.Participant{i};
-        grp = T_test.GroupeAge{i};
-        plat = T_test.Plat(i);
-        fprintf('  Participant %d: %s (%s) - Plat: %.3f\n', i, pid, grp, plat);
+        fprintf('  Participant %d: %s (%s) - Plat: %.3f\n', i, ...
+            T_test.Participant{i}, T_test.GroupeAge{i}, T_test.Plat(i));
     end
 else
     fprintf('Structure de test non trouvée - vérifiez vos données\n');
 end
 
-%=================== 4) Injecter N_cycle (par condition) =================
+% ===================== ÉTAPE 4 (suite) : Injection de N_cycle ===========
+% Ajoute le total de cycles par paire/groupe/condition dans TABLES_AREA
+% pour affichage dans le panneau d'info des figures
 TABLES_AREA.N_cycle = struct();
 
 pairs = fieldnames(N_cycle_total);
 for i = 1:numel(pairs)
-    pair = pairs{i};
+    pair   = pairs{i};
     groups = fieldnames(N_cycle_total.(pair));
     for g = 1:numel(groups)
         grp = groups{g};
-        if ~isfield(TABLES_AREA.N_cycle, pair), TABLES_AREA.N_cycle.(pair) = struct(); end
-        if ~isfield(TABLES_AREA.N_cycle.(pair), grp), TABLES_AREA.N_cycle.(pair).(grp) = struct(); end
+        if ~isfield(TABLES_AREA.N_cycle, pair),        TABLES_AREA.N_cycle.(pair) = struct();        end
+        if ~isfield(TABLES_AREA.N_cycle.(pair), grp),  TABLES_AREA.N_cycle.(pair).(grp) = struct();  end
 
-        % Remplir par condition (sans copie forcée)
         for ic = 1:numel(Conditions)
             cond = Conditions{ic};
             val = 0;
@@ -311,25 +362,25 @@ for i = 1:numel(pairs)
     end
 end
 
-%============= 5) NOMBRE DE PARTICIPANTS PAR GROUPE/PAIRE/CONDITION ======
+% ===================== ÉTAPE 5 : Comptage des participants ==============
+% Pour chaque combinaison groupe/paire/condition, compte le nombre de
+% participants ayant au moins une valeur non-NaN (contribution réelle)
 fprintf('=== Computing N_Participant by group/pair/condition ===\n');
 
 if ~isfield(TABLES_AREA,'N_Participant'), TABLES_AREA.N_Participant = struct(); end
 
 all_pairs = fieldnames(TABLES_AREA);
-all_pairs = setdiff(all_pairs, {'N_cycle','N_Participant'});  % ignorer branches de synthèse
+all_pairs = setdiff(all_pairs, {'N_cycle','N_Participant'}); % Exclut les branches de synthèse
 
-conds = {'Plat','Medium','High'};
-groups = fieldnames(Group);  % mêmes groupes que ParticipantGroup.m
+conds  = {'Plat','Medium','High'};
+groups = fieldnames(Group);
 
 for ipair = 1:numel(all_pairs)
     pair = all_pairs{ipair};
 
-    % Registre des contributions: contrib.(group).(pid) = [c1 c2 c3]
+    % contrib.(group).(pid) = [logical x 3] : a une valeur valide dans [Plat, Medium, High]
     contrib = struct();
-    for ig = 1:numel(groups)
-        contrib.(groups{ig}) = struct();
-    end
+    for ig = 1:numel(groups), contrib.(groups{ig}) = struct(); end
 
     if ~isstruct(TABLES_AREA.(pair)), continue; end
     bands = fieldnames(TABLES_AREA.(pair));
@@ -343,107 +394,102 @@ for ipair = 1:numel(all_pairs)
             T = TABLES_AREA.(pair).(band).(sp).mean;
             if isempty(T), continue; end
 
+            % Pour chaque ligne (participant), enregistre s'il contribue
+            % (valeur non-NaN) à chaque condition
             for irow = 1:height(T)
                 gr  = string(T.GroupeAge{irow});
                 pid = string(T.Participant{irow});
                 if strlength(gr)==0 || strlength(pid)==0, continue; end
-                gr  = char(gr); pid = char(pid);
+                gr = char(gr); pid = char(pid);
 
                 if ~isfield(contrib.(gr), pid)
                     contrib.(gr).(pid) = false(1, numel(conds));
                 end
-
                 vals = [T.Plat(irow), T.Medium(irow), T.High(irow)];
-                mask_valid = ~isnan(vals);
-                contrib.(gr).(pid) = contrib.(gr).(pid) | mask_valid;
+                contrib.(gr).(pid) = contrib.(gr).(pid) | ~isnan(vals);
             end
         end
     end
 
-    % Compte par groupe et condition (en excluant ceux 100% NaN)
+    % Compte par groupe et condition en n'incluant que les participants
+    % ayant contribué à AU MOINS une condition (exclut les lignes vides)
     for ig = 1:numel(groups)
-        gr = groups{ig};
+        gr   = groups{ig};
         pids = fieldnames(contrib.(gr));
         if isempty(pids)
             for ic = 1:numel(conds)
                 cond = conds{ic};
-                if ~isfield(TABLES_AREA.N_Participant, gr), TABLES_AREA.N_Participant.(gr) = struct(); end
-                if ~isfield(TABLES_AREA.N_Participant.(gr), pair), TABLES_AREA.N_Participant.(gr).(pair) = struct(); end
+                if ~isfield(TABLES_AREA.N_Participant, gr),         TABLES_AREA.N_Participant.(gr) = struct();          end
+                if ~isfield(TABLES_AREA.N_Participant.(gr), pair),  TABLES_AREA.N_Participant.(gr).(pair) = struct();   end
                 TABLES_AREA.N_Participant.(gr).(pair).(cond) = 0;
             end
             continue;
         end
 
+        % Matrice [nParticipants × 3 conditions] de contributions
         M = false(numel(pids), numel(conds));
-        for k = 1:numel(pids)
-            M(k,:) = contrib.(gr).(pids{k});
-        end
-
-        keep = any(M, 2);
-        M = M(keep, :);
+        for k = 1:numel(pids), M(k,:) = contrib.(gr).(pids{k}); end
+        M = M(any(M,2), :); % Garde uniquement les participants actifs
 
         for ic = 1:numel(conds)
             cond = conds{ic};
             n_here = sum(M(:,ic));
-            if ~isfield(TABLES_AREA.N_Participant, gr), TABLES_AREA.N_Participant.(gr) = struct(); end
-            if ~isfield(TABLES_AREA.N_Participant.(gr), pair), TABLES_AREA.N_Participant.(gr).(pair) = struct(); end
+            if ~isfield(TABLES_AREA.N_Participant, gr),        TABLES_AREA.N_Participant.(gr) = struct();         end
+            if ~isfield(TABLES_AREA.N_Participant.(gr), pair), TABLES_AREA.N_Participant.(gr).(pair) = struct();  end
             TABLES_AREA.N_Participant.(gr).(pair).(cond) = n_here;
         end
     end
 end
 
-%=========================== 6) Save master ===============================
+% ===================== SAUVEGARDE DU .mat MAÎTRE ========================
 mat_out = fullfile(stat_dir, 'ALL_TABLES_AREA_STRUCT.mat');
 save(mat_out, 'TABLES_AREA', '-v7.3');
 fprintf('DONE: %s\n', mat_out);
 
-%% ============================== 2) PLOTS ================================
+%% ===================== PARTIE 2 : VISUALISATION =========================
 clc; close all;
 
 % --- Chemins ---
 root_coh = 'C:\Users\defsil00\Documents\Script\Results\Coherence';
-all_dir  = fullfile(root_coh, 'ALL');                 % contains Coherence_*.mat
-stat_dir = fullfile(root_coh, 'STATISTIQUE_AREA');    % new output root for AREA
+all_dir  = fullfile(root_coh, 'ALL');
+stat_dir = fullfile(root_coh, 'STATISTIQUE_AREA');
 csv_dir  = fullfile(stat_dir, 'CSV_CoherenceArea');
 addpath(genpath('C:\Users\defsil00\Documents\Script'));
-addpath(genpath('C:\Users\defsil00\Documents\Script'));
 
-% --- Paramètres globaux ---
+% --- Paramètres de visualisation ---
 Conditions = {'Plat','Medium','High'};
 Bandes     = {'Alpha','Beta','Gamma'};
 
-% Libellés de bandes
-band_ranges = struct();
-band_ranges.Alpha = '8-12 Hz';
-band_ranges.Beta  = '13-30 Hz';
-band_ranges.Gamma = '31-60 Hz';
+% Plages fréquentielles pour les étiquettes de figures
+band_ranges = struct('Alpha','8-12 Hz', 'Beta','13-30 Hz', 'Gamma','31-60 Hz');
 
-% Esthétique
-col_left   = [0.00 0.60 0.00];  % vert
-col_right  = [0.50 0.00 0.50];  % violet
-alpha_pts  = 0.40;              % transparence des points
-gray_levels = [0.85 0.85 0.85; 0.70 0.70 0.70; 0.55 0.55 0.55]; % Plat/Medium/High
+% Esthétique des figures
+col_left   = [0.00 0.60 0.00]; % Vert — points côté gauche
+col_right  = [0.50 0.00 0.50]; % Violet — points côté droit
+alpha_pts  = 0.40;              % Transparence des points individuels
+% Niveaux de gris pour les barres des 3 conditions (Plat → plus clair)
+gray_levels = [0.85 0.85 0.85; 0.70 0.70 0.70; 0.55 0.55 0.55];
 
-% Dossier de sortie
+% Dossier de sortie des figures
 fig_dir = fullfile(stat_dir, 'Fig_CoherenceArea_GroupedBars');
 if ~exist(fig_dir,'dir'), mkdir(fig_dir); end
 
-% Charger TABLES_AREA si nécessaire
+% Chargement de TABLES_AREA si non présent en workspace
 if ~exist('TABLES_AREA','var')
     S = load(fullfile(stat_dir,'ALL_TABLES_AREA_STRUCT.mat'));
     TABLES_AREA = S.TABLES_AREA;
 end
 
-% Groupes d'âge (pour filtrage)
+% Chargement des groupes d'âge
 ParticipantGroup;
 
-% Choisir le groupe à afficher
+% Groupe d'âge à visualiser (adapter selon besoin)
 groupe_age = 'Adolescents'; % 'JeunesEnfants' | 'Enfants' | 'Adolescents' | 'Adultes'
 
-% Récupérer les paires présentes (hors branches de synthèse)
+% Extraction des paires disponibles (hors branches de synthèse N_cycle, N_Participant)
 all_pairs = setdiff(fieldnames(TABLES_AREA), {'N_cycle','N_Participant'});
 
-% Lister toutes les sous-phases effectivement présentes
+% Inventaire de toutes les sous-phases effectivement présentes dans TABLES_AREA
 all_subphases = {};
 for ip = 1:numel(all_pairs)
     p = all_pairs{ip};
@@ -451,26 +497,27 @@ for ip = 1:numel(all_pairs)
     for ib = 1:numel(bnames)
         b = bnames{ib};
         spnames = fieldnames(TABLES_AREA.(p).(b));
-        all_subphases = [all_subphases, spnames']; %#ok<AGROW>
+        all_subphases = [all_subphases, spnames']; 
     end
 end
 all_subphases = unique(all_subphases);
 
 fprintf('=== Grouped bar plots for COHERENCE AREA (groupe: %s) ===\n', groupe_age);
 
+% --- Boucle de génération des figures ---
 for ib = 1:numel(Bandes)
     band = Bandes{ib};
 
     for isp = 1:numel(all_subphases)
         sp = all_subphases{isp};
 
-        % Liste des paires qui ont bien les champs nécessaires
+        % Sélection des paires ayant des données pour cette combinaison band/sp
         pair_list = {};
         for ip = 1:numel(all_pairs)
             p = all_pairs{ip};
-            if isfield(TABLES_AREA.(p), band) && isfield(TABLES_AREA.(p).(band), sp) ...
-               && all(isfield(TABLES_AREA.(p).(band).(sp), {'left','right','mean'}))
-                pair_list{end+1} = p; %#ok<AGROW>
+            if isfield(TABLES_AREA.(p), band) && isfield(TABLES_AREA.(p).(band), sp) && ...
+               all(isfield(TABLES_AREA.(p).(band).(sp), {'left','right','mean'}))
+                pair_list{end+1} = p;
             end
         end
         if isempty(pair_list)
@@ -478,17 +525,18 @@ for ib = 1:numel(Bandes)
             continue;
         end
 
-        % Matrices moyennes/SD : (lignes = conditions, colonnes = paires)
-        M  = nan(numel(Conditions), numel(pair_list));
-        SD = nan(numel(Conditions), numel(pair_list));
+        % Calcul des moyennes et écarts-types par condition et paire
+        % (filtrés sur le groupe d'âge sélectionné)
+        M  = nan(numel(Conditions), numel(pair_list)); % Moyennes
+        SD = nan(numel(Conditions), numel(pair_list)); % Écarts-types
 
-        % Stocker les tables par côté (pour les scatters)
+        % Stockage des tables filtrées pour les scatters individuels
         Tm_cell = cell(numel(pair_list),1);
         Tl_cell = cell(numel(pair_list),1);
         Tr_cell = cell(numel(pair_list),1);
 
         for ip = 1:numel(pair_list)
-            p = pair_list{ip};
+            p  = pair_list{ip};
             Tm = TABLES_AREA.(p).(band).(sp).mean;
             Tl = TABLES_AREA.(p).(band).(sp).left;
             Tr = TABLES_AREA.(p).(band).(sp).right;
@@ -497,37 +545,36 @@ for ib = 1:numel(Bandes)
             Tm = Tm(ismember(Tm.GroupeAge, groupe_age), :);
             Tl = Tl(ismember(Tl.GroupeAge, groupe_age), :);
             Tr = Tr(ismember(Tr.GroupeAge, groupe_age), :);
-
             Tm_cell{ip} = Tm; Tl_cell{ip} = Tl; Tr_cell{ip} = Tr;
 
             for ic = 1:numel(Conditions)
                 c = Conditions{ic};
-                vals = Tm.(c);
+                vals       = Tm.(c);
                 M(ic, ip)  = mean(vals, 'omitnan');
-                SD(ic, ip) = std(vals,  'omitnan'); % écart-type
+                SD(ic, ip) = std(vals,  'omitnan');
             end
         end
 
-        % ================== PLOT SUR AXE NUMÉRIQUE ==================
-        x = 1:numel(pair_list);
-        f = figure('Position',[100 120 1600 620]); hold on;  % un peu plus haut
+        % --- Tracé de la figure ---
+        x  = 1:numel(pair_list);
+        f  = figure('Position',[100 120 1600 620]); hold on;
 
-        % Barres groupées (sur x numériques)
-        bh = bar(x, M', 'grouped');   % M' = [nPairs x 3]
+        % Barres groupées (conditions = groupes, paires = positions sur x)
+        bh = bar(x, M', 'grouped'); % M' = [nPairs × nConditions]
         for ic = 1:numel(Conditions)
             bh(ic).FaceColor = gray_levels(ic,:);
             bh(ic).EdgeColor = [0 0 0];
         end
         drawnow;
 
-        % Centres des barres pour erreurs/points
+        % Récupération des positions exactes du centre de chaque barre
         xC = arrayfun(@(b)b.XEndPoints, bh, 'UniformOutput', false);
 
-        % Barres d'erreur + points de moyenne
+        % Superposition des points de moyenne et des barres d'erreur (écart-type)
         for ic = 1:numel(Conditions)
             xc = xC{ic};
             for ip = 1:numel(pair_list)
-                mu = M(ic, ip); sd = SD(ic, ip);
+                mu = M(ic,ip); sd = SD(ic,ip);
                 if ~isnan(mu)
                     plot(xc(ip), mu, 'ko', 'MarkerFaceColor','k', 'MarkerSize',6);
                     errorbar(xc(ip), mu, sd, 'k', 'LineWidth',1.2, 'CapSize',8);
@@ -535,12 +582,13 @@ for ib = 1:numel(Bandes)
             end
         end
 
-        % Points individuels par côté (avec masque NaN + jitter)
+        % Superposition des points individuels par côté avec jitter horizontal
+        % (améliore la lisibilité en évitant la superposition des points)
         jitter = 0.06;
         for ic = 1:numel(Conditions)
             xc = xC{ic};
             for ip = 1:numel(pair_list)
-                % LEFT
+                % Points côté gauche (vert)
                 if ~isempty(Tl_cell{ip})
                     vL = Tl_cell{ip}.(Conditions{ic});
                     maskL = ~isnan(vL);
@@ -551,7 +599,7 @@ for ib = 1:numel(Bandes)
                         sL.MarkerFaceAlpha = alpha_pts; sL.MarkerEdgeAlpha = alpha_pts;
                     end
                 end
-                % RIGHT
+                % Points côté droit (violet)
                 if ~isempty(Tr_cell{ip})
                     vR = Tr_cell{ip}.(Conditions{ic});
                     maskR = ~isnan(vR);
@@ -565,83 +613,76 @@ for ib = 1:numel(Bandes)
             end
         end
 
-        % ---------- Axe X : noms de paires uniquement ----------
+        % Formatage des axes
         set(gca, 'XTick', x, 'XTickLabel', strrep(pair_list,'_','-'), ...
                  'TickLabelInterpreter','none');
         xlabel('Paires musculaires', 'FontSize',12, 'FontWeight','bold');
         ylabel('Coherence area (a.u.)', 'FontSize',12, 'FontWeight','bold');
 
-        % ---------- Légende ----------
+        % Légende
         hLeft  = scatter(nan, nan, 36, 'o', 'MarkerFaceColor',col_left,  'MarkerEdgeColor',col_left);
         hRight = scatter(nan, nan, 36, 'o', 'MarkerFaceColor',col_right, 'MarkerEdgeColor',col_right);
         legend([bh(1), bh(2), bh(3), hLeft, hRight], ...
                {'Plat','Medium','High','left','right'}, 'Location','northwest');
 
-       % ---------- Panneau latéral avec N et C (PAR CONDITION) ----------
-% Colonnes: PAIRE | N_Plat N_Med N_High | C_Plat C_Med C_High
-wPair = 14;
-wNs   = 5;  % largeur nombre N
-wCs   = 6;  % largeur nombre C
+        % --- Panneau d'information latéral (N participants + N cycles) ---
+        % Colonnes : PAIRE | N_Plat N_Medium N_High | C_Plat C_Medium C_High
+        wPair = 14; wNs = 5; wCs = 6;
+        fmtHeader = sprintf('%%-%ds  %%%ds %%%ds %%%ds   %%%ds %%%ds %%%ds', wPair, wNs, wNs, wNs, wCs, wCs, wCs);
+        fmtRow    = sprintf('%%-%ds  %%%dd %%%dd %%%dd   %%%dd %%%dd %%%dd', wPair, wNs, wNs, wNs, wCs, wCs, wCs);
 
-fmtHeader = sprintf('%%-%ds  %%%ds %%%ds %%%ds   %%%ds %%%ds %%%ds', ...
-                    wPair, wNs, wNs, wNs, wCs, wCs, wCs);
-fmtRow    = sprintf('%%-%ds  %%%dd %%%dd %%%dd   %%%dd %%%dd %%%dd', ...
-                    wPair, wNs, wNs, wNs, wCs, wCs, wCs);
+        info_lines = cell(1, numel(pair_list)+1);
+        info_lines{1} = sprintf(fmtHeader, 'PAIRE', 'N_P', 'N_M', 'N_H', 'C_P', 'C_M', 'C_H');
 
-info_lines = cell(1, numel(pair_list)+1);
-info_lines{1} = sprintf(fmtHeader, 'PAIRE', 'N_P', 'N_M', 'N_H', 'C_P', 'C_M', 'C_H');
+        for ipx = 1:numel(pair_list)
+            pp      = strrep(string(pair_list{ipx}), '_', '-');
+            Tm_pair = Tm_cell{ipx};
 
-for ipx = 1:numel(pair_list)
-    pp = strrep(string(pair_list{ipx}), '_', '-');
-    Tm_pair = Tm_cell{ipx};
-
-    % N participants PAR CONDITION (sur la table 'mean' filtrée au groupe)
-    Np = [0 0 0];  % [Plat Medium High]
-    if ~isempty(Tm_pair)
-        for ic = 1:numel(Conditions)
-            c = Conditions{ic};
-            if ismember(c, Tm_pair.Properties.VariableNames)
-                Np(ic) = sum(~isnan(Tm_pair.(c)));
+            % N participants avec valeur non-NaN par condition (table filtrée au groupe)
+            Np = [0 0 0];
+            if ~isempty(Tm_pair)
+                for ic = 1:numel(Conditions)
+                    c = Conditions{ic};
+                    if ismember(c, Tm_pair.Properties.VariableNames)
+                        Np(ic) = sum(~isnan(Tm_pair.(c)));
+                    end
+                end
             end
+
+            % C total de cycles (depuis TABLES_AREA.N_cycle)
+            Cp = [0 0 0];
+            for ic = 1:numel(Conditions)
+                cond = Conditions{ic};
+                if isfield(TABLES_AREA,'N_cycle') && ...
+                   isfield(TABLES_AREA.N_cycle, pair_list{ipx}) && ...
+                   isfield(TABLES_AREA.N_cycle.(pair_list{ipx}), groupe_age) && ...
+                   isfield(TABLES_AREA.N_cycle.(pair_list{ipx}).(groupe_age), cond)
+                    Cp(ic) = TABLES_AREA.N_cycle.(pair_list{ipx}).(groupe_age).(cond);
+                end
+            end
+            info_lines{ipx+1} = sprintf(fmtRow, char(pp), Np(1), Np(2), Np(3), Cp(1), Cp(2), Cp(3));
         end
-    end
 
-    % C cycles PAR CONDITION (from TABLES_AREA.N_cycle)
-    Cp = [0 0 0];
-    for ic = 1:numel(Conditions)
-        cond = Conditions{ic};
-        if isfield(TABLES_AREA,'N_cycle') && ...
-           isfield(TABLES_AREA.N_cycle, pair_list{ipx}) && ...
-           isfield(TABLES_AREA.N_cycle.(pair_list{ipx}), groupe_age) && ...
-           isfield(TABLES_AREA.N_cycle.(pair_list{ipx}).(groupe_age), cond)
-            Cp(ic) = TABLES_AREA.N_cycle.(pair_list{ipx}).(groupe_age).(cond);
-        end
-    end
+        % Positionnement de l'axe principal pour laisser de la place au panneau
+        ax = gca;
+        ax.Position = [0.08 0.18 0.56 0.72];
 
-    info_lines{ipx+1} = sprintf(fmtRow, char(pp), Np(1), Np(2), Np(3), Cp(1), Cp(2), Cp(3));
-end
+        % Titre
+        t = title(sprintf('%s (%s) - %s - %s', band, band_ranges.(band), sp, groupe_age), ...
+                  'FontSize',14,'FontWeight','bold');
+        t.Units = 'normalized'; t.Position(2) = 1.03;
 
-% --- Réserver un peu plus d'espace pour le panneau à droite
-ax = gca;
-ax.Position = [0.08 0.18 0.56 0.72];   % <- largeur de l'axe réduite (0.62 -> 0.56)
+        % Annotation textbox (police Consolas pour l'alignement en colonnes)
+        annotation(f, 'textbox', [0.68 0.18 0.32 0.72], ...
+                   'String', strjoin(info_lines, newline), ...
+                   'Interpreter','none', ...
+                   'FontName','Consolas', 'FontSize',10, ...
+                   'HorizontalAlignment','left', ...
+                   'VerticalAlignment','top', ...
+                   'EdgeColor',[0.85 0.85 0.85], 'BackgroundColor',[1 1 1], ...
+                   'FitBoxToText','off', 'Margin', 6);
 
-% --- Titre (inchangé)
-t = title(sprintf('%s (%s) - %s - %s', band, band_ranges.(band), sp, groupe_age), ...
-          'FontSize',14,'FontWeight','bold');
-t.Units = 'normalized'; t.Position(2) = 1.03;
-
-% --- Annotation (panneau N / C) : élargie
-annotation(f, 'textbox', [0.68 0.18 0.32 0.72], ...   % <- largeur 0.32 (au lieu de 0.26)
-           'String', strjoin(info_lines, newline), ...
-           'Interpreter','none', ...
-           'FontName','Consolas', 'FontSize',10, ...
-           'HorizontalAlignment','left', ...
-           'VerticalAlignment','top', ...
-           'EdgeColor',[0.85 0.85 0.85], 'BackgroundColor',[1 1 1], ...
-           'FitBoxToText','off', ...
-           'Margin', 6);                               % un peu d'air mais pas trop
-
-        % ---------- Export propre ----------
+        % Export PNG haute résolution
         figname = sprintf('GroupedBars_AREA_%s_%s_%s.png', sp, band, groupe_age);
         exportgraphics(f, fullfile(fig_dir, figname), 'Resolution', 300);
         fprintf('  OK FIG: %s / %s -> %s\n', sp, band, figname);
@@ -651,9 +692,17 @@ end
 
 fprintf('All done.\n');
 
-%% =========================== LOCAL FUNCTIONS ============================
+%% ===================== FONCTIONS LOCALES ================================
+
 function grp = resolveAge(pid, Group)
-% Return age group name for a given participant id (string)
+% RESOLVEAGE  Retourne le nom du groupe d'âge d'un participant.
+%
+%   Entrée  : pid   — identifiant du participant (string)
+%             Group — struct avec champs JeunesEnfants, Enfants,
+%                     Adolescents (optionnel), Adultes (listes de PIDs)
+%   Sortie  : grp   — nom du groupe ('JeunesEnfants','Enfants',
+%                     'Adolescents','Adultes', ou 'Inconnu')
+
     if ismember(pid, Group.JeunesEnfants)
         grp = 'JeunesEnfants';
     elseif ismember(pid, Group.Enfants)
@@ -668,49 +717,62 @@ function grp = resolveAge(pid, Group)
 end
 
 function n = get_quota_if_condition_has_cycles(DATA, cond, pair)
-% Retourne L_target_eff_<pair> pour CETTE condition si ≥1 cycle retenu (G ou D), sinon 0.
+% GET_QUOTA_IF_CONDITION_HAS_CYCLES
+%   Retourne L_target_eff_<pair> pour la condition donnée, mais uniquement
+%   si au moins un côté (gauche ou droit) possède des cycles retenus.
+%   Retourne 0 si la condition est vide ou si le quota est introuvable.
+%
+%   Entrées : DATA  — structure DATA du participant
+%             cond  — nom de la condition ('Plat', 'Medium', 'High')
+%             pair  — clé de paire ('m1_m2')
+%   Sortie  : n     — nombre de cycles (scalaire double), ou 0
 
     n = 0;
     if ~isstruct(DATA) || ~isfield(DATA, cond), return; end
-
     parts = strsplit(pair,'_');
     if numel(parts) ~= 2, return; end
     m1 = parts{1}; m2 = parts{2};
 
-    % 1) Y a-t-il au moins un cycle retenu sur ce cond pour cette paire ?
-    has_cycles = local_side_has_cycles(DATA.(cond), 'left',  m1, m2) ...
-              || local_side_has_cycles(DATA.(cond), 'right', m1, m2);
-    if ~has_cycles
-        n = 0;   % condition vide -> quota = 0 pour ce participant
-        return;
-    end
+    % Vérifie la présence de cycles sur au moins un côté
+    has_cycles = local_side_has_cycles(DATA.(cond), 'left',  m1, m2) || ...
+                 local_side_has_cycles(DATA.(cond), 'right', m1, m2);
+    if ~has_cycles, return; end
 
-    % 2) Lire le quota d’étude dans la méta de CETTE condition
+    % Lecture du quota dans les métadonnées de la condition
     if isfield(DATA.(cond), 'meta') && isstruct(DATA.(cond).meta)
         meta = DATA.(cond).meta;
         f1 = ['L_target_eff_' pair];
-        f2 = ['L_target_'     pair];   % fallback si anciens fichiers
+        f2 = ['L_target_'     pair]; % Fallback pour anciens fichiers
         if isfield(meta, f1) && isnumeric(meta.(f1)) && isfinite(meta.(f1))
             n = double(meta.(f1)); return;
         elseif isfield(meta, f2) && isnumeric(meta.(f2)) && isfinite(meta.(f2))
             n = double(meta.(f2)); return;
         end
     end
-
-    % Si pas trouvable: applique ta règle "non trouvé => 0"
-    n = 0;
+    n = 0; % Quota introuvable dans les métadonnées
 end
 
 function tf = local_side_has_cycles(node_cond, side, m1, m2)
-% True si ce côté a ≥1 cycle retenu (on lit Ncycle_<m1>_<m2> ou à défaut L_<m1>_<m2>)
+% LOCAL_SIDE_HAS_CYCLES
+%   Retourne true si le côté donné possède au moins 1 cycle retenu
+%   pour la paire m1-m2, en vérifiant les champs Ncycle_<m1>_<m2>
+%   puis L_<m1>_<m2> (fallback pour compatibilité avec anciens fichiers).
+%
+%   Entrées : node_cond — DATA.(cond)
+%             side      — 'left' ou 'right'
+%             m1, m2    — noms des muscles de la paire
+%   Sortie  : tf        — booléen
+
     tf = false;
     if ~isfield(node_cond, side), return; end
     S = node_cond.(side);
 
+    % Vérification via Ncycle_<m1>_<m2> (champ principal)
     fnN = ['Ncycle_' m1 '_' m2];
     if isfield(S, fnN) && isnumeric(S.(fnN)) && isfinite(S.(fnN)) && S.(fnN) > 0
         tf = true; return;
     end
+    % Fallback : vérification via L_<m1>_<m2> (anciens fichiers)
     fnL = ['L_' m1 '_' m2];
     if isfield(S, fnL) && isnumeric(S.(fnL)) && isfinite(S.(fnL)) && S.(fnL) > 0
         tf = true; return;
